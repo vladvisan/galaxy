@@ -6,7 +6,10 @@ import logging
 import time
 
 from galaxy import model
-from galaxy.jobs import JobDestination
+from galaxy.jobs import (
+    JobDestination,
+    JobWrapper
+)
 from galaxy.jobs.runners import (
     AsynchronousJobRunner,
     AsynchronousJobState,
@@ -57,6 +60,17 @@ class ShellJobRunner(AsynchronousJobRunner):
     def parse_destination_params(self, params):
         return split_params(params)
 
+    def get_params_from_wrapper_and_destination_params(self, jobWrapper: JobWrapper, destParams: dict):
+        shell_params, job_params= self.parse_destination_params(destParams)
+        user=jobWrapper.user
+        userFiltered=user.split("@")[0]
+        userId=jobWrapper.user_id
+        jobUserUsername=jobWrapper.get_job().user.username
+        realSystemUser=jobWrapper.app.config.real_system_username
+        shell_params["username"]=userFiltered
+        return shell_params, job_params
+
+
     def queue_job(self, job_wrapper):
         """Create job script and submit it to the DRM"""
         # prepare the job
@@ -68,7 +82,7 @@ class ShellJobRunner(AsynchronousJobRunner):
 
         # Get shell and job execution interface
         job_destination = job_wrapper.job_destination
-        shell_params, job_params = self.parse_destination_params(job_destination.params)
+        shell_params, job_params = self.get_params_from_wrapper_and_destination_params(job_wrapper, job_destination.params)
         shell, job_interface = self.get_cli_plugins(shell_params, job_params)
 
         # wrapper.get_id_tag() instead of job_id for compatibility with TaskWrappers.
@@ -171,7 +185,7 @@ class ShellJobRunner(AsynchronousJobRunner):
                     continue
 
                 log.debug(f"({id_tag}/{external_job_id}) job not found in batch state check")
-                shell_params, job_params = self.parse_destination_params(ajs.job_destination.params)
+                shell_params, job_params = self.get_params_from_wrapper_and_destination_params(ajs.job_wrapper, ajs.job_destination.params)
                 shell, job_interface = self.get_cli_plugins(shell_params, job_params)
                 cmd_out = shell.execute(job_interface.get_single_status(external_job_id))
                 state = job_interface.parse_single_status(cmd_out.stdout, external_job_id)
@@ -212,7 +226,7 @@ class ShellJobRunner(AsynchronousJobRunner):
         self._handle_metadata_externally(ajs.job_wrapper, resolve_requirements=True)
 
     def __handle_out_of_memory(self, ajs, external_job_id):
-        shell_params, job_params = self.parse_destination_params(ajs.job_destination.params)
+        shell_params, job_params = self.get_params_from_wrapper_and_destination_params(ajs.job_wrapper, ajs.job_destination.params)
         shell, job_interface = self.get_cli_plugins(shell_params, job_params)
         cmd_out = shell.execute(job_interface.get_failure_reason(external_job_id))
         if cmd_out is not None:
@@ -238,7 +252,9 @@ class ShellJobRunner(AsynchronousJobRunner):
         for v in job_destinations.values():
             job_destination = v["job_destination"]
             job_ids = v["job_ids"]
-            shell_params, job_params = self.parse_destination_params(job_destination.params)
+            first_job = self.watched[0] #Necessarily exists since job_destinations.values() is only populated by the previous for loop
+            job_wrapper= first_job.job_wrapper #Since OAR and Slurm both allow any user to see all users' jobs' statuses, we can choose an arbitrary user/job
+            shell_params, job_params = self.get_params_from_wrapper_and_destination_params(job_wrapper,job_destination.params)
             shell, job_interface = self.get_cli_plugins(shell_params, job_params)
             cmd_out = shell.execute(job_interface.get_status(job_ids))
             assert cmd_out.returncode == 0, cmd_out.stderr
